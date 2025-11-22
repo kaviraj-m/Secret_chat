@@ -1,27 +1,61 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { kv } from '@vercel/kv';
 
-// Use /tmp on Vercel (writable), fallback to project directory for local dev
-const CHAT_FILE_PATH = process.env.VERCEL 
-  ? path.join('/tmp', 'chat.json')
-  : path.join(process.cwd(), 'data', 'chat.json');
+// Use Vercel KV on Vercel (persistent), fallback to file system for local dev
+const USE_KV = !!process.env.KV_REST_API_URL;
 
-// Ensure data directory exists and initialize chat.json if it doesn't exist
-async function ensureChatFile() {
-  try {
-    await fs.access(CHAT_FILE_PATH);
-  } catch {
-    // File doesn't exist, create it with empty messages
-    await fs.writeFile(CHAT_FILE_PATH, JSON.stringify({ messages: [] }, null, 2), 'utf8');
+const CHAT_FILE_PATH = path.join(process.cwd(), 'data', 'chat.json');
+const KV_KEY = 'chat:messages';
+
+// Get messages from storage
+async function getMessages() {
+  if (USE_KV) {
+    try {
+      const messages = await kv.get<Array<any>>(KV_KEY);
+      return messages || [];
+    } catch (error) {
+      console.error('Error reading from KV:', error);
+      return [];
+    }
+  } else {
+    // Local file system
+    try {
+      await fs.access(CHAT_FILE_PATH);
+      const fileContents = await fs.readFile(CHAT_FILE_PATH, 'utf8');
+      const data = JSON.parse(fileContents);
+      return data.messages || [];
+    } catch {
+      return [];
+    }
+  }
+}
+
+// Save messages to storage
+async function saveMessages(messages: Array<any>) {
+  if (USE_KV) {
+    try {
+      await kv.set(KV_KEY, messages);
+    } catch (error) {
+      console.error('Error writing to KV:', error);
+      throw error;
+    }
+  } else {
+    // Local file system
+    const dataDir = path.join(process.cwd(), 'data');
+    try {
+      await fs.access(dataDir);
+    } catch {
+      await fs.mkdir(dataDir, { recursive: true });
+    }
+    await fs.writeFile(CHAT_FILE_PATH, JSON.stringify({ messages }, null, 2), 'utf8');
   }
 }
 
 // POST - Add or remove reaction
 export async function POST(request: NextRequest) {
   try {
-    await ensureChatFile();
-    
     const body = await request.json();
     const { messageId, reaction, userName } = body;
     
@@ -32,12 +66,11 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // Read existing messages
-    const fileContents = await fs.readFile(CHAT_FILE_PATH, 'utf8');
-    const data = JSON.parse(fileContents);
+    // Get existing messages
+    const messages = await getMessages();
     
     // Find message
-    const messageIndex = data.messages.findIndex((msg: any) => msg.id === messageId);
+    const messageIndex = messages.findIndex((msg: any) => msg.id === messageId);
     
     if (messageIndex === -1) {
       return NextResponse.json(
@@ -47,35 +80,35 @@ export async function POST(request: NextRequest) {
     }
     
     // Initialize reactions if not exists
-    if (!data.messages[messageIndex].reactions) {
-      data.messages[messageIndex].reactions = {};
+    if (!messages[messageIndex].reactions) {
+      messages[messageIndex].reactions = {};
     }
     
     // Initialize reaction if not exists
-    if (!data.messages[messageIndex].reactions[reaction]) {
-      data.messages[messageIndex].reactions[reaction] = [];
+    if (!messages[messageIndex].reactions[reaction]) {
+      messages[messageIndex].reactions[reaction] = [];
     }
     
     // Toggle reaction (add if not exists, remove if exists)
-    const reactionIndex = data.messages[messageIndex].reactions[reaction].indexOf(userName);
+    const reactionIndex = messages[messageIndex].reactions[reaction].indexOf(userName);
     if (reactionIndex > -1) {
       // Remove reaction
-      data.messages[messageIndex].reactions[reaction].splice(reactionIndex, 1);
+      messages[messageIndex].reactions[reaction].splice(reactionIndex, 1);
       // Remove reaction key if empty
-      if (data.messages[messageIndex].reactions[reaction].length === 0) {
-        delete data.messages[messageIndex].reactions[reaction];
+      if (messages[messageIndex].reactions[reaction].length === 0) {
+        delete messages[messageIndex].reactions[reaction];
       }
     } else {
       // Add reaction
-      data.messages[messageIndex].reactions[reaction].push(userName);
+      messages[messageIndex].reactions[reaction].push(userName);
     }
     
-    // Write back to file
-    await fs.writeFile(CHAT_FILE_PATH, JSON.stringify(data, null, 2));
+    // Save messages
+    await saveMessages(messages);
     
     return NextResponse.json({ 
       success: true, 
-      reactions: data.messages[messageIndex].reactions 
+      reactions: messages[messageIndex].reactions 
     });
   } catch (error) {
     console.error('Error updating reaction:', error);
@@ -85,4 +118,3 @@ export async function POST(request: NextRequest) {
     );
   }
 }
-
