@@ -1,65 +1,34 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { kv } from '@vercel/kv';
-
-// Use Vercel KV on Vercel (persistent), fallback to file system for local dev
-const USE_KV = !!process.env.KV_REST_API_URL;
 
 const CHAT_FILE_PATH = path.join(process.cwd(), 'data', 'chat.json');
-const KV_KEY = 'chat:messages';
 
-// Get messages from storage
-async function getMessages() {
-  if (USE_KV) {
-    try {
-      const messages = await kv.get<Array<any>>(KV_KEY);
-      return messages || [];
-    } catch (error) {
-      console.error('Error reading from KV:', error);
-      return [];
-    }
-  } else {
-    // Local file system
-    try {
-      await fs.access(CHAT_FILE_PATH);
-      const fileContents = await fs.readFile(CHAT_FILE_PATH, 'utf8');
-      const data = JSON.parse(fileContents);
-      return data.messages || [];
-    } catch {
-      return [];
-    }
+// Ensure data directory exists and initialize chat.json if it doesn't exist
+async function ensureChatFile() {
+  const dataDir = path.join(process.cwd(), 'data');
+  try {
+    await fs.access(dataDir);
+  } catch {
+    await fs.mkdir(dataDir, { recursive: true });
   }
-}
-
-// Save messages to storage
-async function saveMessages(messages: Array<any>) {
-  if (USE_KV) {
-    try {
-      await kv.set(KV_KEY, messages);
-    } catch (error) {
-      console.error('Error writing to KV:', error);
-      throw error;
-    }
-  } else {
-    // Local file system
-    const dataDir = path.join(process.cwd(), 'data');
-    try {
-      await fs.access(dataDir);
-    } catch {
-      await fs.mkdir(dataDir, { recursive: true });
-    }
-    await fs.writeFile(CHAT_FILE_PATH, JSON.stringify({ messages }, null, 2), 'utf8');
+  
+  try {
+    await fs.access(CHAT_FILE_PATH);
+  } catch {
+    await fs.writeFile(CHAT_FILE_PATH, JSON.stringify({ messages: [] }, null, 2));
   }
 }
 
 // GET - Retrieve all messages
 export async function GET() {
   try {
-    const messages = await getMessages();
-    return NextResponse.json({ messages });
+    await ensureChatFile();
+    const fileContents = await fs.readFile(CHAT_FILE_PATH, 'utf8');
+    const data = JSON.parse(fileContents);
+    return NextResponse.json(data);
   } catch (error) {
-    console.error('Error reading messages:', error);
+    console.error('Error reading chat file:', error);
     return NextResponse.json({ messages: [] }, { status: 200 });
   }
 }
@@ -67,6 +36,8 @@ export async function GET() {
 // POST - Add a new message
 export async function POST(request: NextRequest) {
   try {
+    await ensureChatFile();
+    
     const body = await request.json();
     const { name, message } = body;
     
@@ -77,8 +48,9 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // Get existing messages
-    const messages = await getMessages();
+    // Read existing messages
+    const fileContents = await fs.readFile(CHAT_FILE_PATH, 'utf8');
+    const data = JSON.parse(fileContents);
     
     // Add new message with timestamp
     const newMessage = {
@@ -90,14 +62,14 @@ export async function POST(request: NextRequest) {
       edited: false,
     };
     
-    messages.push(newMessage);
+    data.messages.push(newMessage);
     
-    // Save messages
-    await saveMessages(messages);
+    // Write back to file
+    await fs.writeFile(CHAT_FILE_PATH, JSON.stringify(data, null, 2));
     
     return NextResponse.json({ success: true, message: newMessage });
   } catch (error) {
-    console.error('Error saving message:', error);
+    console.error('Error writing to chat file:', error);
     return NextResponse.json(
       { error: 'Failed to save message' },
       { status: 500 }
@@ -108,6 +80,8 @@ export async function POST(request: NextRequest) {
 // PATCH - Edit a message
 export async function PATCH(request: NextRequest) {
   try {
+    await ensureChatFile();
+    
     const body = await request.json();
     const { id, message, name } = body;
     
@@ -118,11 +92,12 @@ export async function PATCH(request: NextRequest) {
       );
     }
     
-    // Get existing messages
-    const messages = await getMessages();
+    // Read existing messages
+    const fileContents = await fs.readFile(CHAT_FILE_PATH, 'utf8');
+    const data = JSON.parse(fileContents);
     
     // Find and update message
-    const messageIndex = messages.findIndex((msg: any) => msg.id === id);
+    const messageIndex = data.messages.findIndex((msg: any) => msg.id === id);
     
     if (messageIndex === -1) {
       return NextResponse.json(
@@ -132,7 +107,7 @@ export async function PATCH(request: NextRequest) {
     }
     
     // Check if user owns the message
-    if (messages[messageIndex].name !== name) {
+    if (data.messages[messageIndex].name !== name) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 403 }
@@ -140,14 +115,14 @@ export async function PATCH(request: NextRequest) {
     }
     
     // Update message
-    messages[messageIndex].message = message;
-    messages[messageIndex].edited = true;
-    messages[messageIndex].editedAt = new Date().toISOString();
+    data.messages[messageIndex].message = message;
+    data.messages[messageIndex].edited = true;
+    data.messages[messageIndex].editedAt = new Date().toISOString();
     
-    // Save messages
-    await saveMessages(messages);
+    // Write back to file
+    await fs.writeFile(CHAT_FILE_PATH, JSON.stringify(data, null, 2));
     
-    return NextResponse.json({ success: true, message: messages[messageIndex] });
+    return NextResponse.json({ success: true, message: data.messages[messageIndex] });
   } catch (error) {
     console.error('Error updating message:', error);
     return NextResponse.json(
@@ -160,6 +135,8 @@ export async function PATCH(request: NextRequest) {
 // DELETE - Delete a message
 export async function DELETE(request: NextRequest) {
   try {
+    await ensureChatFile();
+    
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');
     const name = searchParams.get('name');
@@ -171,11 +148,12 @@ export async function DELETE(request: NextRequest) {
       );
     }
     
-    // Get existing messages
-    const messages = await getMessages();
+    // Read existing messages
+    const fileContents = await fs.readFile(CHAT_FILE_PATH, 'utf8');
+    const data = JSON.parse(fileContents);
     
     // Find message
-    const messageIndex = messages.findIndex((msg: any) => msg.id === id);
+    const messageIndex = data.messages.findIndex((msg: any) => msg.id === id);
     
     if (messageIndex === -1) {
       return NextResponse.json(
@@ -185,7 +163,7 @@ export async function DELETE(request: NextRequest) {
     }
     
     // Check if user owns the message
-    if (messages[messageIndex].name !== name) {
+    if (data.messages[messageIndex].name !== name) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 403 }
@@ -193,10 +171,10 @@ export async function DELETE(request: NextRequest) {
     }
     
     // Remove message
-    messages.splice(messageIndex, 1);
+    data.messages.splice(messageIndex, 1);
     
-    // Save messages
-    await saveMessages(messages);
+    // Write back to file
+    await fs.writeFile(CHAT_FILE_PATH, JSON.stringify(data, null, 2));
     
     return NextResponse.json({ success: true });
   } catch (error) {
@@ -211,8 +189,17 @@ export async function DELETE(request: NextRequest) {
 // Clear all messages - separate route
 export async function PUT(request: NextRequest) {
   try {
+    await ensureChatFile();
+    
+    // Read existing messages
+    const fileContents = await fs.readFile(CHAT_FILE_PATH, 'utf8');
+    const data = JSON.parse(fileContents);
+    
     // Clear all messages
-    await saveMessages([]);
+    data.messages = [];
+    
+    // Write back to file
+    await fs.writeFile(CHAT_FILE_PATH, JSON.stringify(data, null, 2));
     
     return NextResponse.json({ success: true, message: 'All messages cleared' });
   } catch (error) {
