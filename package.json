@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "start:server": "HOSTNAME=0.0.0.0 PORT=3000 next start",
     "lint": "eslint"
   },
   "dependencies": {
