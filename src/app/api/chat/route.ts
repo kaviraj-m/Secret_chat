@@ -2,21 +2,18 @@ import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import path from 'path';
 
-const CHAT_FILE_PATH = path.join(process.cwd(), 'data', 'chat.json');
+// Use /tmp on Vercel (writable), fallback to project directory for local dev
+const CHAT_FILE_PATH = process.env.VERCEL 
+  ? path.join('/tmp', 'chat.json')
+  : path.join(process.cwd(), 'data', 'chat.json');
 
 // Ensure data directory exists and initialize chat.json if it doesn't exist
 async function ensureChatFile() {
-  const dataDir = path.join(process.cwd(), 'data');
-  try {
-    await fs.access(dataDir);
-  } catch {
-    await fs.mkdir(dataDir, { recursive: true });
-  }
-  
   try {
     await fs.access(CHAT_FILE_PATH);
   } catch {
-    await fs.writeFile(CHAT_FILE_PATH, JSON.stringify({ messages: [] }, null, 2));
+    // File doesn't exist, create it with empty messages
+    await fs.writeFile(CHAT_FILE_PATH, JSON.stringify({ messages: [] }, null, 2), 'utf8');
   }
 }
 
